@@ -16,7 +16,7 @@ except Exception as e:
 
 # --- FUNÇÃO BUSCA CEP ---
 def buscar_cep(cep):
-    cep = cep.replace("-", "").replace(".", "").strip()
+    cep = str(cep).replace("-", "").replace(".", "").strip()
     if len(cep) == 8:
         try:
             response = requests.get(f"https://viacep.com.br/ws/{cep}/json/")
@@ -121,7 +121,7 @@ st.set_page_config(page_title="Print Bros 3D - Gestor", layout="wide")
 if 'carrinho' not in st.session_state: st.session_state.carrinho = []
 if 'cli_temp' not in st.session_state: st.session_state.cli_temp = {"nome": "Consumidor", "telefone": ""}
 
-menu = st.sidebar.radio("Navegação", ["Calculadora", "Clientes", "Histórico de Orçamentos"])
+menu = st.sidebar.radio("Navegação", ["Calculadora", "Clientes", "Histórico de Orçamentos", "📦 Pedidos (Produção)"])
 
 # --- TELA: CALCULADORA ---
 if menu == "Calculadora":
@@ -214,24 +214,20 @@ if menu == "Calculadora":
                         st.error("Por favor, informe o nome do cliente antes de salvar.")
                         st.stop()
 
-                    # LOG 1: Verificar Cliente
                     status.write("🔍 Verificando cliente no banco...")
                     res_c = supabase.table("clientes").select("id").eq("nome", nome_cli).execute()
                     
                     if res_c.data:
                         id_cliente_final = res_c.data[0]['id']
-                        status.write(f"✅ Cliente existente encontrado (ID: {id_cliente_final})")
+                        status.write(f"✅ Cliente encontrado (ID: {id_cliente_final})")
                     else:
-                        status.write("🆕 Cliente novo! Criando cadastro básico...")
+                        status.write("🆕 Cliente novo! Criando cadastro...")
                         new_c = supabase.table("clientes").insert({"nome": nome_cli, "telefone": tel_cli}).execute()
                         if new_c.data:
                             id_cliente_final = new_c.data[0]['id']
-                            status.write(f"✅ Cliente cadastrado com sucesso!")
-                        else:
-                            status.write("⚠️ Falha ao criar cliente, salvando orçamento sem vínculo.")
+                            status.write(f"✅ Cliente cadastrado!")
 
-                    # LOG 2: Salvar Orçamento
-                    status.write("💾 Salvando orçamento no histórico...")
+                    status.write("💾 Gravando orçamento...")
                     dados_orc = {
                         "valor_total": total_final, 
                         "itens": st.session_state.carrinho,
@@ -245,12 +241,12 @@ if menu == "Calculadora":
                     
                     if res_o.data:
                         status.update(label="✅ Salvo com sucesso!", state="complete", expanded=False)
-                        st.success(f"Orçamento de {nome_cli} gravado!")
+                        st.success(f"Orçamento gravado!")
                     else:
-                        st.error("Erro ao inserir na tabela orcamentos.")
+                        st.error("Erro ao gravar orçamento.")
 
                 except Exception as e:
-                    st.error(f"Erro no banco de dados: {e}")
+                    st.error(f"Erro: {e}")
 
         if c3.button("🗑️ Limpar Tudo"):
             st.session_state.carrinho = []
@@ -326,7 +322,7 @@ elif menu == "Clientes":
 
 # --- TELA: HISTÓRICO ---
 elif menu == "Histórico de Orçamentos":
-    st.title("📂 Histórico")
+    st.title("📂 Histórico de Orçamentos")
     try:
         query = supabase.table("orcamentos").select("*, clientes(nome, telefone)").order("criado_em", desc=True).execute()
         if query.data:
@@ -335,17 +331,75 @@ elif menu == "Histórico de Orçamentos":
                 with st.expander(f"📄 {orc['criado_em'][:10]} - {nome_ex} | R$ {orc.get('valor_total', 0):.2f}"):
                     itens_pdf = []
                     for item in orc.get('itens', []):
-                        p = item.get('preco_final_unitario') or item.get('preco_venda') or 0
+                        p = item.get('preco_final_unitario') or 0
                         itens_pdf.append({"nome": item.get('nome'), "material": item.get('material', 'PLA'), "preco_final_unitario": p, "quantidade": item.get('quantidade', 1)})
                     
                     st.table(itens_pdf)
                     
-                    c1, c2 = st.columns(2)
-                    pdf_h = gerar_pdf({"nome": nome_ex, "telefone": orc.get('cliente_tel_manual')}, itens_pdf, orc.get('prazo_entrega', '3 dias'))
+                    c1, c2, c3 = st.columns(3)
+                    
+                    # GERAR PDF
+                    pdf_h = gerar_pdf({"nome": nome_ex, "telefone": orc.get('cliente_tel_manual')}, itens_pdf, orc.get('prazo_entrega', 'N/A'))
                     c1.download_button("📥 PDF", data=pdf_h, file_name=f"Orcamento_{orc['id']}.pdf", key=f"h_{orc['id']}")
                     
-                    if c2.button("🗑️ Excluir", key=f"del_o_{orc['id']}"):
+                    # CONVERTER EM PEDIDO
+                    if c2.button("🛒 Converter em Pedido", key=f"conv_{orc['id']}", type="primary"):
+                        res_p = supabase.table("pedidos").insert({
+                            "orcamento_id": orc['id'],
+                            "cliente_id": orc.get('cliente_id'),
+                            "valor_total": orc['valor_total'],
+                            "itens": orc['itens'],
+                            "status": "Aguardando Pagamento"
+                        }).execute()
+                        if res_p.data:
+                            st.success("Pedido gerado com sucesso!")
+                    
+                    # EXCLUIR
+                    if c3.button("🗑️ Excluir", key=f"del_o_{orc['id']}"):
                         supabase.table("orcamentos").delete().eq("id", orc['id']).execute()
                         st.rerun()
+        else:
+            st.info("Nenhum orçamento no histórico.")
     except Exception as e:
         st.error(f"Erro ao carregar histórico: {e}")
+
+# --- TELA: PEDIDOS (FLUXO DE PRODUÇÃO) ---
+elif menu == "📦 Pedidos (Produção)":
+    st.title("📦 Gestão de Pedidos")
+    
+    res_p = supabase.table("pedidos").select("*, clientes(nome, telefone)").order("criado_em", desc=True).execute()
+    
+    if res_p.data:
+        status_opcoes = ["Aguardando Pagamento", "Em Produção", "Pronto para Envio", "Finalizado"]
+        abas = st.tabs(status_opcoes)
+        
+        for i, status_nome in enumerate(status_opcoes):
+            with abas[i]:
+                pedidos_filtrados = [p for p in res_p.data if p['status'] == status_nome]
+                if not pedidos_filtrados:
+                    st.caption(f"Sem pedidos em {status_nome.lower()}.")
+                
+                for ped in pedidos_filtrados:
+                    with st.container(border=True):
+                        nome_p = ped['clientes']['nome'] if ped.get('clientes') else "Cliente Avulso"
+                        c1, c2, c3 = st.columns([2, 1, 1])
+                        
+                        c1.markdown(f"**Pedido #{ped['id']}** - {nome_p}")
+                        c1.caption(f"Valor: R$ {ped['valor_total']:.2f}")
+                        
+                        novo_status = c2.selectbox(
+                            "Status", 
+                            status_opcoes, 
+                            index=status_opcoes.index(ped['status']),
+                            key=f"st_change_{ped['id']}"
+                        )
+                        
+                        if novo_status != ped['status']:
+                            supabase.table("pedidos").update({"status": novo_status}).eq("id", ped['id']).execute()
+                            st.rerun()
+                            
+                        if c3.button("🔍 Detalhes", key=f"det_ped_{ped['id']}"):
+                            st.write("**Resumo da Produção:**")
+                            st.table(ped['itens'])
+    else:
+        st.info("Converta um orçamento no histórico para iniciar um pedido.")
