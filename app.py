@@ -1,9 +1,11 @@
+import time
 import streamlit as st
+import extra_streamlit_components as stx
 import requests
 from fpdf import FPDF
 from datetime import datetime, timedelta
 from supabase import create_client, Client
-
+from datetime import datetime, timedelta
 # --- CONFIGURAÇÕES SUPABASE ---
 SUPABASE_URL = "https://heirrnnbgkslndpyyjlx.supabase.co"
 SUPABASE_KEY = "sb_secret_Hmuo25aRe-CAEvG852vcFg_qbtkgEE-"
@@ -12,28 +14,53 @@ try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception as e:
     st.error(f"Erro na conexão com Supabase: {e}")
+# --- 2. DEVE SER A PRIMEIRA LINHA DO SCRIPT ---
+st.set_page_config(page_title="PRINT BROS - Gestor", layout="wide")
 
-# --- SISTEMA DE AUTENTICAÇÃO ---
+# --- 3. INICIALIZAÇÃO DO COOKIE (Logo após set_page_config) ---
+cookie_manager = stx.CookieManager()
+
 def autenticar():
+    # 1. Tenta ler o cookie
+    user_cookie = cookie_manager.get(cookie="pb_user_nome")
+    
+    # 2. Pequena pausa se o cookie ainda não foi carregado (essencial para evitar o F5 voltar pro login)
+    if user_cookie is None:
+        time.sleep(0.1) # Aguarda 100ms para o componente de cookie sincronizar
+        user_cookie = cookie_manager.get(cookie="pb_user_nome")
+
     if "autenticado" not in st.session_state:
-        st.session_state["autenticado"] = False
+        if user_cookie:
+            st.session_state["autenticado"] = True
+            st.session_state["usuario_nome"] = user_cookie
+        else:
+            st.session_state["autenticado"] = False
 
     if not st.session_state["autenticado"]:
+        # Se mesmo após o delay não houver cookie, mostra o formulário de login
         st.markdown("### 🔐 PRINT BROS - Login")
         with st.form("login_form"):
             user_input = st.text_input("Usuário")
             pass_input = st.text_input("Senha", type="password")
+            lembrar = st.checkbox("Manter conectado", value=True)
+            
             if st.form_submit_button("Acessar Sistema"):
                 res = supabase.table("usuarios").select("*").eq("username", user_input).eq("password", pass_input).execute()
                 if res.data:
+                    nome_usuario = res.data[0]['nome']
                     st.session_state["autenticado"] = True
-                    st.session_state["usuario_nome"] = res.data[0]['nome']
+                    st.session_state["usuario_nome"] = nome_usuario
+                    
+                    if lembrar:
+                        # Define o cookie para expirar em 7 dias
+                        cookie_manager.set("pb_user_nome", nome_usuario, 
+                                         expires_at=datetime.now() + timedelta(days=7))
                     st.rerun()
                 else:
                     st.error("Usuário ou senha incorretos.")
         return False
     return True
-
+    
 # --- FUNÇÕES AUXILIARES ---
 def formatar_moeda(valor):
     """Transforma um número em string formato BRL R$ 0,00"""
@@ -217,7 +244,7 @@ def gerar_pdf(dados_cliente, itens, prazo):
 # --- INÍCIO DO APP ---
 if autenticar():
     st.set_page_config(page_title="PRINT BROS - Gestor", layout="wide")
-    
+        
     if 'carrinho' not in st.session_state: st.session_state.carrinho = []
     if 'cli_temp' not in st.session_state: st.session_state.cli_temp = {"nome": "Consumidor", "telefone": ""}
 
@@ -248,6 +275,15 @@ if autenticar():
 
         with st.container(border=True):
             st.subheader("🛠️ Adicionar Peça")
+            
+            # --- NOVOS CAMPOS DE PARAMETRIZAÇÃO ---
+            c_par1, c_par2, c_par3 = st.columns(3)
+            custo_kwh = c_par1.number_input("Custo Energia (R$/kWh)", value=0.73, step=0.01)
+            margem_lucro = c_par2.number_input("Margem de Lucro (%)", value=100.0, step=5.0)
+            taxa_fixa = c_par3.number_input("Taxa Fixa (R$)", value=15.0, step=1.0)
+            
+            st.divider() # Linha divisória para organizar
+            
             c1, c2, c3 = st.columns(3)
             n_p = c1.text_input("Nome da Peça")
             m_p = c2.selectbox("Máquina", list(MAQUINAS.keys()))
@@ -258,32 +294,93 @@ if autenticar():
             t_h = c5.number_input("Horas", min_value=0.0)
             pr_kg = c6.number_input("R$ KG Material", value=130.0)
             
+            # Campo para sobrescrever o cálculo se desejar
             v_final_manual = st.number_input("VALOR FINAL MANUAL (Unitário R$)", min_value=0.0)
             
             if st.button("➕ Adicionar ao Carrinho"):
-                venda_un = v_final_manual if v_final_manual > 0 else round(((MAQUINAS[m_p]/1000)*t_h*0.73) + ((pr_kg/1000)*p_g) + 15.0, 2)
-                st.session_state.carrinho.append({"id": datetime.now().timestamp(), "nome": n_p, "maquina": m_p, "material": mat_p, "preco_final_unitario": venda_un, "quantidade": 1})
+                # CÁLCULO DINÂMICO PARAMETRIZADO
+                # 1. Custo de Energia: (Watts / 1000) * Horas * Preço kWh
+                custo_energia = (MAQUINAS[m_p] / 1000) * t_h * custo_kwh
+                
+                # 2. Custo de Material: (Preço KG / 1000) * Gramas
+                custo_material = (pr_kg / 1000) * p_g
+                
+                custo_total_base = custo_energia + custo_material
+                
+                # 3. Aplicação da margem de lucro e soma da taxa fixa
+                # Ex: se margem é 100%, multiplica por 2.0
+                venda_calculada = (custo_total_base * (1 + margem_lucro / 100)) + taxa_fixa
+                
+                venda_un = v_final_manual if v_final_manual > 0 else round(venda_calculada, 2)
+                
+                st.session_state.carrinho.append({
+                    "id": datetime.now().timestamp(), 
+                    "nome": n_p, 
+                    "maquina": m_p, 
+                    "material": mat_p, 
+                    "preco_final_unitario": venda_un, 
+                    "quantidade": 1
+                })
                 st.rerun()
 
         if st.session_state.carrinho:
-            st.subheader("📋 Resumo")
+            st.subheader("📋 Itens Adicionados")
             total = sum(item['preco_final_unitario'] * item['quantidade'] for item in st.session_state.carrinho)
+            
+            # --- LISTAGEM COM AÇÕES ---
             for i, item in enumerate(st.session_state.carrinho):
-                # Tratamento de valor no resumo do carrinho
-                st.write(f"• {item['nome']} - {formatar_moeda(item['preco_final_unitario'])}")
+                col_item, col_del = st.columns([4, 1])
+                
+                with col_item:
+                    st.write(f"**{item['nome']}** ({item['material']}) - {formatar_moeda(item['preco_final_unitario'])}")
+                
+                with col_del:
+                    if st.button("🗑️", key=f"del_item_{i}"):
+                        st.session_state.carrinho.pop(i)
+                        st.rerun()
             
             st.markdown(f"### Total: {formatar_moeda(total)}")
 
-            if st.button("💾 Salvar Orçamento"):
+            # --- BOTÕES DE AÇÃO RÁPIDA ---
+            c1, c2, c3 = st.columns(3)
+            
+            # 1. Gerar PDF Temporário
+            dados_pdf_temp = {
+                "nome": st.session_state.cli_temp.get('nome', 'Consumidor'),
+                "telefone": st.session_state.cli_temp.get('telefone', '')
+            }
+            pdf_preview = gerar_pdf(dados_pdf_temp, st.session_state.carrinho, "7 dias")
+            c1.download_button("📥 Baixar PDF", data=pdf_preview, file_name="Orcamento_Preview.pdf", use_container_width=True)
+
+            # 2. Enviar via WhatsApp
+            nome_c = st.session_state.cli_temp.get('nome', 'Cliente')
+            tel_c = st.session_state.cli_temp.get('telefone', '')
+            if tel_c:
+                import urllib.parse
+                msg_whatsapp = f"Olá {nome_c}! Segue o orçamento dos itens: \n"
+                for it in st.session_state.carrinho:
+                    msg_whatsapp += f"- {it['nome']}: {formatar_moeda(it['preco_final_unitario'])}\n"
+                msg_whatsapp += f"\n*Total: {formatar_moeda(total)}*"
+                
+                tel_limpo = "".join(filter(str.isdigit, tel_c))
+                if not tel_limpo.startswith("55"): tel_limpo = "55" + tel_limpo
+                link_wa = f"https://wa.me/{tel_limpo}?text={urllib.parse.quote(msg_whatsapp)}"
+                c2.link_button("🟢 WhatsApp", link_wa, use_container_width=True)
+            else:
+                c2.warning("📱 Sem WhatsApp")
+
+            # 3. Salvar no Banco
+            if c3.button("💾 Salvar no Banco", type="primary", use_container_width=True):
+                # Inclui o nome do responsável conforme sua instrução salva
                 dados = {
                     "valor_total": total, 
                     "itens": st.session_state.carrinho, 
                     "cliente_nome_manual": st.session_state.cli_temp['nome'], 
                     "cliente_id": st.session_state.cli_temp.get('id'),
-                    "criado_por": st.session_state.usuario_nome
+                    "criado_por": st.session_state.get("usuario_nome", "Não identificado")
                 }
                 supabase.table("orcamentos").insert(dados).execute()
-                st.success("Salvo com sucesso!")
+                st.success("Orçamento gravado no histórico!")
                 st.session_state.carrinho = []
                 st.rerun()
 

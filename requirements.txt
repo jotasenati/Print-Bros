@@ -2,3 +2,4 @@ streamlit
 requests
 fpdf
 supabase
+extra_streamlit_components
