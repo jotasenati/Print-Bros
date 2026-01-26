@@ -547,10 +547,10 @@ if autenticar():
             if c3.button("💾 Salvar no Banco", type="primary", use_container_width=True):
                 dados = {
                     "valor_total": total, 
-                    "itens": st.session_state.carrinho, # Salva o carrinho com a lista 'componentes' dentro
-                    "cliente_nome_manual": st.session_state.cli_temp['nome'], 
-                    "cliente_id": st.session_state.cli_temp.get('id'),
-                    "criado_por": st.session_state.get("usuario_nome", "Não identificado")
+                    "itens": st.session_state.carrinho,
+                    "cliente_nome_manual": st.session_state.cli_temp.get('nome', 'Cliente Indefinido'), 
+                    "cliente_id": st.session_state.cli_temp.get('id'), # Se for cliente do banco
+                    "criado_por": st.session_state.get("usuario_nome", "Sistema")
                 }
                 supabase.table("orcamentos").insert(dados).execute()
                 st.success("Orçamento gravado no histórico!")
