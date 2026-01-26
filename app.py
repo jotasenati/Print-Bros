@@ -18,7 +18,7 @@ try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception as e:
     st.error(f"Erro na conexão com Supabase: {e}")
-
+˜
 # --- CONFIG PAGE ---
 st.set_page_config(page_title="PRINT BROS - Gestor", layout="wide")
 
