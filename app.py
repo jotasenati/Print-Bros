@@ -545,17 +545,45 @@ if autenticar():
 
             # --- SALVAR ORÇAMENTO ---
             if c3.button("💾 Salvar no Banco", type="primary", use_container_width=True):
-                dados = {
+                nome_cli = st.session_state.cli_temp['nome']
+                tel_cli = st.session_state.cli_temp.get('telefone', '')
+                cliente_id = st.session_state.cli_temp.get('id')
+
+                # 1. Lógica para salvar/identificar o cliente no banco
+                if not cliente_id and nome_cli != "Consumidor":
+                    # Tenta ver se esse cliente já existe pelo nome para evitar duplicados
+                    check_cli = supabase.table("clientes").select("id").eq("nome", nome_cli).execute()
+                    
+                    if check_cli.data:
+                        cliente_id = check_cli.data[0]['id']
+                    else:
+                        # Se não existe, cria o novo cliente agora
+                        new_cli = supabase.table("clientes").insert({
+                            "nome": nome_cli,
+                            "telefone": tel_cli
+                        }).execute()
+                        if new_cli.data:
+                            cliente_id = new_cli.data[0]['id']
+
+                # 2. Agora salva o orçamento com o ID do cliente (se houver)
+                dados_orcamento = {
                     "valor_total": total, 
-                    "itens": st.session_state.carrinho, # Salva o carrinho com a lista 'componentes' dentro
-                    "cliente_nome_manual": st.session_state.cli_temp['nome'], 
-                    "cliente_id": st.session_state.cli_temp.get('id'),
+                    "itens": st.session_state.carrinho, 
+                    "cliente_nome_manual": nome_cli, 
+                    "cliente_id": cliente_id,
                     "criado_por": st.session_state.get("usuario_nome", "Não identificado")
                 }
-                supabase.table("orcamentos").insert(dados).execute()
-                st.success("Orçamento gravado no histórico!")
-                st.session_state.carrinho = []
-                st.rerun()
+                
+                try:
+                    supabase.table("orcamentos").insert(dados_orcamento).execute()
+                    st.success(f"Orçamento de {nome_cli} gravado com sucesso!")
+                    st.session_state.carrinho = []
+                    # Limpa o cliente temporário para o próximo
+                    st.session_state.cli_temp = {"nome": "Consumidor", "telefone": ""}
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao salvar: {e}")
 
     # --- TELA: ESTOQUE ---
     elif menu == "📦 Estoque de Filamentos":
@@ -735,21 +763,35 @@ if autenticar():
                         c1.download_button("📥 PDF", data=pdf_h, file_name=f"Orc_{orc['id']}.pdf")
                         
                         if c3.button("🛒 Virar Pedido", key=f"conv_{orc['id']}", use_container_width=True):
-                            supabase.table("pedidos").insert({
+                            # Preparamos os dados herdando o que já estava no orçamento
+                            dados_pedido = {
                                 "orcamento_id": orc['id'],
                                 "valor_total": orc['valor_total'],
                                 "itens": orc['itens'],
-                                "status": "Aguardando Pagamento"
-                            }).execute()
+                                "status": "Aguardando Pagamento",
+                                # --- O VÍNCULO QUE FALTAVA ---
+                                "cliente_id": orc.get('cliente_id'), 
+                                "cliente_nome_manual": orc.get('cliente_nome_manual'),
+                                "criado_por": st.session_state.get("usuario_nome", "Sistema")
+                            }
                             
-                            logs = dar_baixa_estoque(orc['itens'])
-                            
-                            st.success("Pedido Criado!")
-                            if logs:
-                                st.write("📉 **Movimentação de Estoque:**")
-                                for l in logs: st.write(l)
-                            else:
-                                st.info("Nenhum item vinculado ao estoque para dar baixa.")
+                            try:
+                                supabase.table("pedidos").insert(dados_pedido).execute()
+                                
+                                # Realiza a baixa no estoque
+                                logs = dar_baixa_estoque(orc['itens'])
+                                
+                                st.success(f"✅ Pedido de {nome_ex} criado com sucesso!")
+                                
+                                if logs:
+                                    with st.expander("📉 Detalhes da Baixa de Estoque", expanded=True):
+                                        for l in logs: st.write(l)
+                                
+                                time.sleep(2)
+                                st.rerun()
+                                
+                            except Exception as e:
+                                st.error(f"Erro ao converter pedido: {e}")
                             
                         if c4.button("🗑️ Excluir", key=f"del_o_{orc['id']}"):
                             supabase.table("orcamentos").delete().eq("id", orc['id']).execute()
